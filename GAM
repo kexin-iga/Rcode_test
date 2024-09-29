@@ -1,0 +1,206 @@
+library(tidyverse)
+library("gratia")
+library("mgcv")
+library("datasets") 
+data(CO2, package = "datasets")
+
+plant <- CO2 |>
+  as_tibble() |>
+  rename(plant = Plant, type = Type, treatment = Treatment) |>
+  mutate(plant = factor(plant, ordered = FALSE))
+
+head(plant)
+
+plant_ylab <- expression(CO[2] ~ uptake ~ (mu * mol ~ m^{-3})) # Y轴标签的表达式对象
+plant_xlab <- expression(CO[2] ~ concentration ~ (mL ~ L^{-1})) # X轴标签的表达式对象
+
+plant |>
+  ggplot(aes(x = conc, y = uptake, 
+             group = plant, 
+             colour = treatment)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~type) +
+  labs(y = plant_ylab, x = plant_xlab, colour = "Treatment")+
+  theme_classic()
+
+
+
+#创建一个新的因子列 tt，表示 treatment 和 type 的交叉组合
+plant <- plant |>
+  mutate(tt = fct_cross(treatment, type))
+
+#拟合GAM模型
+m_plant <- gam(uptake ~ treatment * type + #treatment 和 type 的交互作用
+                 s(conc, by = tt, k = 6) + #conc 的平滑函数，由新的因子 tt 分组，并且平滑函数的基数（k）为6
+                 s(plant, bs = "re"), #plant 的随机效应平滑函数，其中 bs = "re" 指定了随机效应基类型
+               data = plant, 
+               method = "REML", #使用限制最大似然（REML）方法来估计模型参数
+               family = Gamma(link = "log")) #指定模型的误差分布为伽马分布，并使用对数链接函数。
+
+#用于提供模型的概述和描述
+overview(m_plant)
+
+draw(m_plant, residuals = TRUE, scales = "fixed")&theme_bw()
+
+ds1 <- data_slice(m_plant,
+                  conc = evenly(conc, n = 100),#在conc（浓度）的范围内生成100个均匀分布的值
+                  treatment = level(treatment, "chilled"), #将treatment变量固定为"chilled"
+                  type = level(type, "Quebec"),#将type变量固定为"Quebec"
+                  tt = level(tt, "chilled:Quebec")
+)
+
+head(ds1)
+
+fv1 <- fitted_values(m_plant, data = ds1, 
+                     scale = "response", #用于指定拟合值的尺度,"response"意味着得到的是响应变量（即预测的CO2吸收量）的值，而不是线性预测器的值
+                     exclude = "s(plant)")
+#用于指定在计算拟合值时要排除的模型项,意味着拟合值的计算不会考虑该随机效应
+
+head(fv1)
+
+fv1 |>
+  ggplot(aes(x = conc, y = .fitted)) +
+  geom_point(
+    data = plant |>
+      filter(type == "Quebec", treatment == "chilled"),
+    mapping = aes(y = uptake),
+    alpha = 0.8, 
+    colour = "steelblue"
+  ) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci), 
+              alpha = 0.2) +
+  geom_line() +
+  labs(
+    x = plant_xlab, y = plant_ylab,
+    title = expression(Estimated ~ CO[2] ~ uptake),
+    subtitle = "Chilled plants of the Quebec type"
+  )+
+  theme_bw()
+
+
+ds2 <- data_slice(m_plant,
+                  conc = evenly(conc, n = 100), #100个均匀分布的值
+                  treatment = evenly(treatment),  #在treatment变量的所有水平之间生成均匀分布的值
+                  type = level(type, "Mississippi")
+) |>
+  mutate(tt = fct_cross(treatment, type, 
+                        keep_empty = TRUE))#确保即使某些组合没有观测值，它们也会被保留
+
+head(ds2)
+
+table(ds2$tt)
+
+fitted_values(m_plant,
+              data = ds2, scale = "response",
+              exclude = "s(plant)"
+) |>
+  ggplot(aes(x = conc, y = .fitted, group = treatment)) +
+  geom_point(
+    data = plant |> filter(type == "Mississippi"),
+    mapping = aes(y = uptake, colour = treatment),
+    alpha = 0.8
+  ) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci, fill = treatment),
+              alpha = 0.2
+  ) +
+  geom_line(aes(colour = treatment)) +
+  labs(
+    x = plant_xlab, y = plant_ylab,
+    title = expression(Estimated ~ CO[2] ~ uptake),
+    subtitle = "Comparison of treatment in plants of the Mississippi type",
+    colour = "Treatment", fill = "Treatment"
+  )+
+  theme_bw()
+
+# 用于模拟数据的函数
+df <- data_sim("eg2", n = 1000, scale = 0.25, seed = 2)
+
+# 拟合GAM
+m_biv <- gam(y ~ te(x, z), #包含 x 和 z 两个自变量的张量积平滑项，用于捕捉 x 和 z 之间的交互效应
+             data = df, 
+             method = "REML")
+
+overview(m_biv)
+
+ds3 <- data_slice(m_biv,
+                  x = evenly(x, n = 100), #生成 x 的 100 个均匀分布的值
+                  z = quantile(z, probs = 0.25) #计算 z 的第 25 百分位数
+)
+
+#提取 z 的第 25 百分位数值并创建 Y 轴标签
+z_val <- with(ds3, round(quantile(z, probs = 0.25), 2))
+ylab <- bquote(hat(f)(x, .(z_val)))
+
+
+#计算平滑项的估计值,并添加置信区间
+sm <- smooth_estimates(m_biv,  #拟合的广义加性模型
+                       smooth = "te(x,z)", #指定了要计算估计值的平滑项，即双变量平滑项 
+                       data = ds3) |>
+  add_confint() #添加置信区间
+
+head(sm[,-c(2,3)])
+
+#可视化
+sm |>
+  ggplot(aes(x = x, y = .estimate)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci), alpha = 0.2) +
+  geom_line() +
+  labs(
+    title = "Evaluation of smooth te(x,z) at fixed z",
+    y = ylab
+  )+
+  theme_bw()
+
+ds4 <- data_slice(m_biv,
+                  x = evenly(x, n = 100),
+                  z = round(quantile(z, probs = c(0.25, 0.5, 0.75)), 2)
+)
+
+sm <- smooth_estimates(m_biv, smooth = "te(x,z)", data = ds4) |>
+  add_confint() |>
+  mutate(fz = factor(z))
+
+sm |>
+  ggplot(aes(x = x, y = .estimate, 
+             colour = fz, group = fz)) +
+  geom_ribbon(aes(ymin = .lower_ci, 
+                  ymax = .upper_ci, 
+                  fill = fz, 
+                  colour = NULL),
+              alpha = 0.2) +
+  geom_line() +
+  labs(
+    title = "Evaluation of smooth te(x,z) at fixed z",
+    y = expression(hat(f)(x, z)), 
+    colour = "z", 
+    fill = "z"
+  )+theme_bw()
+
+
+fitted_values(m_biv, data = ds3) |> 
+  ggplot(aes(x = x, y = .fitted)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci), alpha = 0.2) +
+  geom_line() +
+  labs(
+    title = "Fitted values from model",
+    y = expression(hat(y))
+  )+theme_bw()
+
+
+fitted_values(m_biv, data = ds4) |>
+  mutate(fz = factor(z)) |>
+  ggplot(aes(x = x, y = .fitted, colour = fz, group = fz)) +
+  geom_ribbon(aes(ymin = .lower_ci, 
+                  ymax = .upper_ci, 
+                  fill = fz, 
+                  colour = NULL),
+              alpha = 0.2) +
+  geom_line() +
+  labs(
+    title = "Fitted values from model",
+    y = expression(hat(y)), colour = "z", fill = "z"
+  )+
+  theme_bw()
+
+
