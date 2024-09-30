@@ -1,0 +1,39 @@
+library(vegan)
+data(varespec)
+data(varechem)
+vare.dist <- vegdist(varespec)#获取群落差异矩阵
+vare.mds<-monoMDS(vare.dist)#进行NMDS分析，此处使用了全局和局部非度量多维尺度与线性和混合尺度
+#如需原有的，可使用vare.mds <- monoMDS(vare.dist, distance = 'bray', k = 2)，它等同于
+#vare.mds<- metaMDS(vare.dist, distance = 'bray', k = 2)
+vare.mds#查看NMDS分析结果，主要为获取stress值
+#下面开始建GAM
+
+plot.new()
+fit <- ordisurf(vare.mds~Baresoil, varechem, col = "blue", add = TRUE,                
+                select = FALSE, method = "GCV.Cp")
+summary(fit)
+
+library(ggplot2)
+library(metR)
+library(ggrepel)
+#设置样地分组
+group <- c(rep("sit1",6),rep("sit2",6),rep("sit3",6),rep("sit4",6))
+#提取需要填充等高线的值，此处为Cladarbu
+ordi.grid <- fit$grid
+#合并数据
+ordi.mite <- expand.grid(x = ordi.grid$x, y = ordi.grid$y)
+ordi.mite$z <- as.vector(ordi.grid$z)
+ordi.mite.na <- data.frame(na.omit(ordi.mite))
+#标记 NMDS 中样本的分组信息
+NMDS <- data.frame(x = vare.mds$point[ ,1], y = vare.mds$point[ ,2], Type = group)
+NMDS$name <- rownames(NMDS)#作图2
+
+ggplot()+  
+  stat_contour(data = ordi.mite.na, aes(x, y, z = z, color = ..level..), size = 1.5) +#size控制线条粗细  
+  scale_colour_continuous(high = '#066502', low = '#c4fd70') + 
+  geom_point(data = NMDS, aes(x, y, fill = Type), color = 'transparent', pch = 21, size = 5) +#控制点大小  
+  scale_fill_manual(values = c('#999999', '#e69f00', '#54b3e8','purple')) +  
+  labs(x = 'NMDS1', y = 'NMDS2', color = 'Baresoil') +theme_classic()+
+  annotate("text",label="de=74.6%,P<0.001",size=4,x=1.5,y=-1)#右下角添加文字
+
+
